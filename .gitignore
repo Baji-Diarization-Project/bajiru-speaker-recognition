@@ -1,2 +1,9 @@
 /target
 .env
+*.egg-info
+.ruff_cache
+.idea/*
+*__pycache__*
+.venv
+.mypy_cache
+*.zip
