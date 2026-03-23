@@ -19,6 +19,7 @@ logger = logging.logger
 N_FFT = 512
 HOP = (int)(512 / 4)
 RATE = 44100
+CHUNK_DURATION = 1
 VOICE_THRESH = 380
 SILENCE_CUTOFF = -45
 
@@ -28,7 +29,8 @@ class Thing:
         self.format = pyaudio.paFloat32
         self.channels = 1
         self.rate = RATE
-        self.chunk = 44100
+        # Allow easier configuration of chunk size by tying it to the sample rate and chunk duration in seconds
+        self.chunk = int(RATE * CHUNK_DURATION)
         self.p: PyAudio
         self.stream: Stream
         # ml testing
@@ -74,7 +76,7 @@ class Thing:
             test = torch.tensor(data).reshape((2, -1))
             output = self.pipeline({"waveform": test, "sample_rate": self.rate})  # runs locally
         else:
-            output = process(data, self.rate)
+            output = process(data, self.rate)[0]
 
         logger.info(output)
 
@@ -85,13 +87,13 @@ class Thing:
             time.sleep(2.0)
 
 
-def process(data: np.ndarray, rate: int) -> str | None:
+def process(data: np.ndarray, rate: int) -> tuple[str, float, float]:
     transformed = librosa.stft(data, n_fft=N_FFT)
     freqs = librosa.fft_frequencies(sr=rate, n_fft=N_FFT)
     return identify_voice_type(transformed, freqs, VOICE_THRESH)
 
 
-def identify_voice_type(transformed: np.ndarray, freqs: np.ndarray, threshold: int) -> str | None:
+def identify_voice_type(transformed: np.ndarray, freqs: np.ndarray, threshold: int) -> tuple[str, float, float]:
     split_bin = np.argmax(freqs >= threshold)
 
     lowband = transformed[:split_bin, :]
@@ -107,11 +109,15 @@ def identify_voice_type(transformed: np.ndarray, freqs: np.ndarray, threshold: i
     logger.debug("Low avg: %f", low)
     logger.debug("High avg: %f", high)
 
-    print(peak_amplitude, peak_db)
+    logger.debug("Peak amplitude: %f", peak_amplitude)
+    logger.debug("Peak dB: %f", peak_db)
 
     if peak_db < SILENCE_CUTOFF:
-        return print("below min db skipping")
-    return ["high", "low"][bool(low > high)]
+        logger.debug("below min db skipping")
+        decision = "unknown"
+    else:
+        decision = ["high", "low"][bool(low > high)]
+    return decision, low, high
 
 
 def main() -> None:
