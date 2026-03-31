@@ -1,0 +1,6 @@
+[submodule "cpp_impl/libs/JUCE"]
+	path = cpp_impl/libs/JUCE
+	url = https://github.com/juce-framework/JUCE.git
+[submodule "cpp_impl/libs/VST_SDK_2.4"]
+	path = cpp_impl/libs/VST_SDK_2.4
+	url = https://github.com/R-Tur/VST_SDK_2.4.git
