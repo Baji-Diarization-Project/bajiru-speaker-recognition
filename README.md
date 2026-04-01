@@ -1,8 +1,11 @@
-# PROJECT NAME
+# Bajiru Speaker Recognition
 Identify whether regular or low voice Bajiru is speaking
 
 
-## Installing the tool
+There is a Python part of the project for prototyping and testing, and a C++ part that will be the runtime. [See here for the C++ README](./cpp_impl/README.md)
+
+
+## Installing the Python development tools
 
 If you already know Python and `uv`, then:
 
@@ -11,8 +14,10 @@ If you already know Python and `uv`, then:
 uv sync
 
 ```
+If that doesn't work out of the box, see [the dependencies](#dependencies) for more info.
 
-and then you can use the entry point `uv run detect_speaker` which will ingest microphone audio.
+
+Then you can use the entry point `uv run detect_speaker` which will start ingesting microphone audio.
 
 
 ### Scripts
@@ -31,6 +36,9 @@ processing/chunking latency)
 
 To run the ML model, you will need a Hugging Face API token, stored in your environment variables under `HUGGING_TOKEN`. Otherwise, a more simple method is the default
 
+- ffmpeg may need to be installed manually on your system
+- for Linux and Linux-like environments, you may have issues installing `pyaudio`, and may need to install some combination of: `python3-dev`, `python3-dev`, `libasound-dev`, `portaudio19-dev`, `libportaudio2`, `libportaudiocpp0`
+
 
 # Development
 
@@ -44,6 +52,7 @@ uv run pre-commit install
 
 ```
 
+To run the automated tests, use `uv run pytest ./tests` 
 
 
 This project is set up to use `pylint` for linting,  `ruff` for a formatting \*and\* linting.  All of these can be set up to run in a `pre-commit` hook to maintain quality while developing.
