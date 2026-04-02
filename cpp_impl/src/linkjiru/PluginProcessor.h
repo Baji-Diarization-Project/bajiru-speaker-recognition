@@ -1,7 +1,9 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
-#include "BufferWriterThread.h"
+#include "SharedRingBuffer.h"
+
+class AnalysisThread;
 
 class LinkjiruProcessor final : public juce::AudioProcessor
 {
@@ -37,17 +39,23 @@ public:
     void restartAnalysis();
     bool isAnalysisRunning() const { return analysisRunning.load(); }
 
-private:
-    static constexpr int fifoSize = 131072; // ~3s at 44.1kHz mono
+    // VTS state passthrough — delegates to AnalysisThread atomics
+    bool isVtsConnected() const;
+    bool isVtsRegistered() const;
+    void requestVtsRegister() const;
+    float getDetectValue() const;
 
-    juce::AbstractFifo fifo{fifoSize};
-    std::array<float, fifoSize> fifoBuffer{};
+private:
+    static constexpr int ringBufferCapacity = 131072; // ~3s at 44.1kHz mono
+
+    SharedRingBuffer<ringBufferCapacity> sharedBuffer;
 
     std::atomic<bool> analysisRunning{false};
-    std::unique_ptr<BufferWriterThread> writerThread;
+    std::unique_ptr<AnalysisThread> analysisThread;
 
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
+    std::vector<float> monoMixBuf;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LinkjiruProcessor)
 };

@@ -1,17 +1,26 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "AnalysisThread.h"
 
 LinkjiruProcessor::LinkjiruProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true))
 {
+    /* Some hosts are absolute menaces and will happily send wildly different
+     * block sizes per processBlock callback (7, 127, 1000, you name it)
+     * without ever bothering to call prepareToPlay again like the spec says
+     * they should. We do resize in prepareToPlay like good citizens, but we
+     * also pre-allocate 65536 floats (256KB) here because we refuse to
+     * allocate on the audio thread when some rogue host decides to surprise
+     * us with a block size it never mentioned. Only the first N samples get
+     * touched per callback — the rest sits cold in virtual memory. */
+    monoMixBuf.resize(65536);
 }
 
 LinkjiruProcessor::~LinkjiruProcessor()
 {
-    if (writerThread)
-        writerThread->stopThread(2000);
+    analysisThread.reset();
 }
 
 const juce::String LinkjiruProcessor::getName() const { return JucePlugin_Name; }
@@ -25,22 +34,22 @@ void LinkjiruProcessor::setCurrentProgram(int) {}
 const juce::String LinkjiruProcessor::getProgramName(int) { return {}; }
 void LinkjiruProcessor::changeProgramName(int, const juce::String &) {}
 
-void LinkjiruProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+void LinkjiruProcessor::prepareToPlay(const double sampleRate, const int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
     currentBlockSize = samplesPerBlock;
-    fifo.reset();
-    fifoBuffer.fill(0.0f);
+    monoMixBuf.resize(static_cast<size_t>(samplesPerBlock));
 }
 
 void LinkjiruProcessor::releaseResources()
 {
-    if (writerThread)
+    if (analysisThread)
     {
-        writerThread->stopThread(2000);
-        writerThread.reset();
-        analysisRunning.store(false);
+        analysisThread->stopThread(3000);
+        analysisThread.reset();
     }
+
+    analysisRunning.store(false);
 }
 
 bool LinkjiruProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
@@ -64,44 +73,43 @@ void LinkjiruProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mid
     if (numChannels == 0 || numSamples == 0)
         return;
 
-    const float gain = 1.0f / static_cast<float>(numChannels);
-    const auto scope = fifo.write(numSamples);
+    if (!analysisRunning.load(std::memory_order_acquire))
+        // we need some priority over a default memory_order_relaxed
+        return;
 
-    for (int i = 0; i < scope.blockSize1; ++i)
+    // Mono mixdown — average across channels
+    const float gain = 1.0f / static_cast<float>(numChannels);
+    const int n = std::min(numSamples, static_cast<int>(monoMixBuf.size()));
+    if (n <= 0)
+        return;
+
+    for (int i = 0; i < n; ++i)
     {
         float sample = 0.0f;
         for (int ch = 0; ch < numChannels; ++ch)
             sample += buffer.getReadPointer(ch)[i];
-        fifoBuffer[static_cast<size_t>(scope.startIndex1 + i)] = sample * gain;
+        monoMixBuf[static_cast<size_t>(i)] = sample * gain;
     }
 
-    for (int i = 0; i < scope.blockSize2; ++i)
-    {
-        float sample = 0.0f;
-        for (int ch = 0; ch < numChannels; ++ch)
-            sample += buffer.getReadPointer(ch)[scope.blockSize1 + i];
-        fifoBuffer[static_cast<size_t>(scope.startIndex2 + i)] = sample * gain;
-    }
-
-    // Audio passes through unchanged
+    sharedBuffer.write(monoMixBuf.data(), n);
 }
 
 void LinkjiruProcessor::startAnalysis()
 {
-    if (writerThread && writerThread->isThreadRunning())
+    bool expected = false;
+    if (!analysisRunning.compare_exchange_strong(expected, true))
         return;
 
-    writerThread = std::make_unique<BufferWriterThread>(fifo, fifoBuffer);
-    writerThread->startThread();
-    analysisRunning.store(true);
+    analysisThread = std::make_unique<AnalysisThread>(sharedBuffer, currentSampleRate);
+    analysisThread->startThread();
 }
 
 void LinkjiruProcessor::stopAnalysis()
 {
-    if (writerThread)
+    if (analysisThread)
     {
-        writerThread->stopThread(2000);
-        writerThread.reset();
+        analysisThread->stopThread(3000);
+        analysisThread.reset();
     }
 
     analysisRunning.store(false);
@@ -110,9 +118,28 @@ void LinkjiruProcessor::stopAnalysis()
 void LinkjiruProcessor::restartAnalysis()
 {
     stopAnalysis();
-    fifo.reset();
-    fifoBuffer.fill(0.0f);
     startAnalysis();
+}
+
+bool LinkjiruProcessor::isVtsConnected() const
+{
+    return analysisThread && analysisThread->isVtsConnected();
+}
+
+bool LinkjiruProcessor::isVtsRegistered() const
+{
+    return analysisThread && analysisThread->isVtsRegistered();
+}
+
+void LinkjiruProcessor::requestVtsRegister() const
+{
+    if (analysisThread)
+        analysisThread->requestVtsRegister();
+}
+
+float LinkjiruProcessor::getDetectValue() const
+{
+    return analysisThread ? analysisThread->getDetectValue() : 0.0f;
 }
 
 void LinkjiruProcessor::getStateInformation(juce::MemoryBlock &) {}
