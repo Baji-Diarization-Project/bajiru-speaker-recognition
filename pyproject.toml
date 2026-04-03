@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["python"]
+members = ["python/*"]
 
 [dependency-groups]
 dev = [
