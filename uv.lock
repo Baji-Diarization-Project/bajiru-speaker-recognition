@@ -7,6 +7,38 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "baji-recognition",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pylint" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-unused-fixtures" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "types-pyaudio" },
+]
+lint = [
+    { name = "pylint" },
+    { name = "ruff" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-unused-fixtures" },
+    { name = "pytest-xdist" },
+]
+type-check = [
+    { name = "mypy" },
+    { name = "types-pyaudio" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -142,7 +174,7 @@ wheels = [
 
 [[package]]
 name = "baji-recognition"
-source = { editable = "." }
+source = { editable = "python" }
 dependencies = [
     { name = "librosa" },
     { name = "matplotlib" },
@@ -151,33 +183,6 @@ dependencies = [
     { name = "pyannote-audio" },
     { name = "pyaudio" },
     { name = "python-dotenv" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pylint" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-unused-fixtures" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "types-pyaudio" },
-]
-lint = [
-    { name = "pylint" },
-    { name = "ruff" },
-]
-test = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-unused-fixtures" },
-    { name = "pytest-xdist" },
-]
-type-check = [
-    { name = "mypy" },
-    { name = "types-pyaudio" },
 ]
 
 [package.metadata]
@@ -189,33 +194,6 @@ requires-dist = [
     { name = "pyannote-audio", specifier = ">=4.0.4" },
     { name = "pyaudio", specifier = ">=0.2.14" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pylint" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-unused-fixtures" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "types-pyaudio" },
-]
-lint = [
-    { name = "pylint" },
-    { name = "ruff" },
-]
-test = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-unused-fixtures" },
-    { name = "pytest-xdist" },
-]
-type-check = [
-    { name = "mypy" },
-    { name = "types-pyaudio" },
 ]
 
 [[package]]
