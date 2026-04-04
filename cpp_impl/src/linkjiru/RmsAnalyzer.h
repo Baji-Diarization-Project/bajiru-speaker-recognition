@@ -1,21 +1,21 @@
 #pragma once
 
+#include "Analyzer.h"
 #include <cmath>
 #include <algorithm>
 
-class RmsAnalyzer
+class RmsAnalyzer final : public Analyzer
 {
 public:
     struct Config
     {
-        float noiseFloorMultiplier = 4.0f;  // threshold = noiseFloor * multiplier
+        float noiseFloorMultiplier = 4.0f;   // threshold = noiseFloor * multiplier
         float minThreshold         = 0.005f; // absolute floor if calibration is near-silent
-        int   calibrationSamples   = 44100;  // ~1s at 44.1kHz (overridden by AnalysisThread)
+        int calibrationSamples     = 44100;  // ~1s at 44.1kHz (overridden by AnalysisThread)
     };
 
     RmsAnalyzer() : config(), currentThreshold(config.minThreshold) {}
-    explicit RmsAnalyzer(const Config& cfg)
-        : config(cfg), currentThreshold(cfg.minThreshold) {}
+    explicit RmsAnalyzer(const Config& cfg) : config(cfg), currentThreshold(cfg.minThreshold) {}
 
     static float computeRms(const float* data, const int numSamples)
     {
@@ -30,8 +30,8 @@ public:
     }
 
     /* Feed audio samples during calibration phase.
-     * Call repeatedly until isCalibrated() returns true. */
-    void calibrate(const float* data, const int numSamples)
+       Call repeatedly until isCalibrated() returns true. */
+    void calibrate(const float* data, const int numSamples) override
     {
         if (calibrated)
             return;
@@ -44,26 +44,25 @@ public:
 
         if (calibrationCount >= config.calibrationSamples)
         {
-            const auto noiseFloorRms = static_cast<float>(
-                std::sqrt(calibrationSumSq / static_cast<double>(calibrationCount)));
-            currentThreshold = std::max(config.minThreshold,
-                                         noiseFloorRms * config.noiseFloorMultiplier);
-            calibrated = true;
+            const auto noiseFloorRms =
+                static_cast<float>(std::sqrt(calibrationSumSq / static_cast<double>(calibrationCount)));
+            currentThreshold = std::max(config.minThreshold, noiseFloorRms * config.noiseFloorMultiplier);
+            calibrated       = true;
         }
     }
 
-    bool isSpeechActive(const float* data, const int numSamples) const
+    bool isSpeechActive(const float* data, const int numSamples) const override
     {
         return computeRms(data, numSamples) > currentThreshold;
     }
 
-    [[nodiscard]] float getThreshold() const { return currentThreshold; }
-    [[nodiscard]] bool  isCalibrated() const { return calibrated; }
+    [[nodiscard]] float getThreshold() const override { return currentThreshold; }
+    [[nodiscard]] bool isCalibrated() const override { return calibrated; }
 
 private:
     Config config;
-    float  currentThreshold;
-    bool   calibrated        = false;
-    int    calibrationCount  = 0;
-    double calibrationSumSq  = 0.0;
+    float currentThreshold;
+    bool calibrated         = false;
+    int calibrationCount    = 0;
+    double calibrationSumSq = 0.0;
 };

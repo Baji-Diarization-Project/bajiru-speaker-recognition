@@ -1,10 +1,11 @@
-// ReSharper disable CppDFAConstantConditions
 #pragma once
 
 #include <juce_core/juce_core.h>
 #include "SharedRingBuffer.h"
-#include "RmsAnalyzer.h"
+#include "Analyzer.h"
 #include "VTubeStudioClient.h"
+#include <memory>
+#include <string>
 #include <vector>
 
 class AnalysisThread final : public juce::Thread
@@ -14,52 +15,48 @@ public:
 
     struct Config
     {
-        int   analysisWindowSamples = 2048;  // ~46ms at 44.1kHz
-        int   pollIntervalMs        = 16;    // ~60fps to match VTube Studio
-        int   sustainMs             = 100;   // hold speech state after last detection
-        int   calibrationDurationMs = 1500;  // 1.5s of noise floor measurement
-        float noiseFloorMultiplier  = 4.0f;  // threshold = noiseFloor * this
+        int analysisWindowSamples = 2048; // ~46ms at 44.1kHz (not that we are using 44.1kHz)
+        int pollIntervalMs        = 16;   // ~60fps to match VTube Studio
+        int sustainMs             = 100;  // hold speech state after last detection
+        std::string vtsHost       = "localhost";
+        std::string vtsPort       = "8001";
     };
 
-    AnalysisThread(const SharedRingBuffer<ringBufferCapacity>& buffer,
-                   const double sampleRate,
-                   const Config& config = {})
-        : Thread("LinkjiruAnalysis"),
-          sharedBuffer(buffer),
-          sampleRate(sampleRate),
-          config(config)
+    AnalysisThread(const SharedRingBuffer<ringBufferCapacity>& buffer, std::unique_ptr<Analyzer> analyzerIn)
+        : Thread("LinkjiruAnalysis"), sharedBuffer(buffer), analyzer(std::move(analyzerIn)), config()
     {
     }
 
-    ~AnalysisThread() override
+    AnalysisThread(const SharedRingBuffer<ringBufferCapacity>& buffer, std::unique_ptr<Analyzer> analyzerIn,
+                   const Config& config)
+        : Thread("LinkjiruAnalysis"), sharedBuffer(buffer), analyzer(std::move(analyzerIn)), config(config)
     {
-        stopThread(3000);
     }
+
+    ~AnalysisThread() override { stopThread(3000); }
 
     // VTS state (read by UI via processor passthrough)
-    bool isVtsConnected() const    { return vtsConnected.load(); }
-    bool isVtsRegistered() const   { return vtsRegistered.load(); }
+    bool isVtsConnected() const { return vtsConnected.load(); }
+    bool isVtsRegistered() const { return vtsRegistered.load(); }
+    bool isRegisterFailed() const { return registerFailed.load(); }
 
     // Model output (read by UI via processor passthrough)
-    float getDetectValue() const   { return detectValue.load(); }
+    float getDetectValue() const { return detectValue.load(); }
 
     // Called from UI thread via processor — sets a flag the run loop picks up
-    void requestVtsRegister()      { registerRequested.store(true); }
+    void requestVtsRegister()
+    {
+        registerFailed.store(false);
+        registerRequested.store(true);
+    }
 
     void run() override
     {
-        // Set up RMS analyzer
-        RmsAnalyzer::Config rmsConfig;
-        rmsConfig.noiseFloorMultiplier = config.noiseFloorMultiplier;
-        rmsConfig.calibrationSamples   = static_cast<int>(
-            sampleRate * config.calibrationDurationMs / 1000.0);
-
-        RmsAnalyzer analyzer(rmsConfig);
         std::vector<float> windowBuf(config.analysisWindowSamples);
 
         // VTube Studio connection
         VTubeStudioClient vtsClient;
-        int64_t lastReconnectAttempt = 0;
+        int64_t lastReconnectAttempt             = 0;
         static constexpr int reconnectIntervalMs = 5000;
 
         bool currentlySpeaking = false;
@@ -79,52 +76,49 @@ public:
                 {
                     lastReconnectAttempt = now;
 
-                    if (vtsClient.connect() && vtsClient.authenticate())
+                    if (vtsClient.connect(config.vtsHost, config.vtsPort) && vtsClient.authenticate())
+                    {
                         vtsConnected.store(true);
+                    }
                 }
             }
 
             // Handle registration request from UI
-            if (vtsClient.isConnected() &&
-                !vtsRegistered.load() &&
-                registerRequested.load())
+            if (vtsClient.isConnected() && !vtsRegistered.load() && registerRequested.load())
             {
-                if (vtsClient.registerParameter(
-                        "LinkjiruDetectLowji",
-                        "1 when speaker detected, 0 otherwise",
-                        0.0f, 1.0f, 0.0f))
+                if (vtsClient.registerParameter("LinkjiruDetectLowji", "1 when speaker detected, 0 otherwise", 0.0f,
+                                                1.0f, 0.0f))
                 {
                     vtsRegistered.store(true);
+                    registerRequested.store(false);
                 }
-
-                registerRequested.store(false);
+                else
+                {
+                    registerFailed.store(true);
+                    registerRequested.store(false);
+                }
             }
 
             // Read latest audio from ring buffer
             sharedBuffer.readLastN(windowBuf.data(), config.analysisWindowSamples);
 
             // Calibration phase
-            if (!analyzer.isCalibrated())
+            if (!analyzer->isCalibrated())
             {
-                analyzer.calibrate(windowBuf.data(), config.analysisWindowSamples);
+                analyzer->calibrate(windowBuf.data(), config.analysisWindowSamples);
                 sleep(config.pollIntervalMs);
                 continue;
             }
 
             // Speech detection
-            // ReSharper disable once CppDFAUnreachableCode
-            const bool speechDetected = analyzer.isSpeechActive(
-                windowBuf.data(), config.analysisWindowSamples);
+            const bool speechDetected = analyzer->isSpeechActive(windowBuf.data(), config.analysisWindowSamples);
 
             if (speechDetected)
             {
-                lastSpeechTime = now;
-
-                if (!currentlySpeaking)
-                    currentlySpeaking = true;
+                lastSpeechTime    = now;
+                currentlySpeaking = true;
             }
-            else if (currentlySpeaking &&
-                     (now - lastSpeechTime > config.sustainMs))
+            else if (currentlySpeaking && (now - lastSpeechTime > config.sustainMs))
             {
                 currentlySpeaking = false;
             }
@@ -134,7 +128,9 @@ public:
 
             // Send to VTube Studio every frame (only if registered)
             if (vtsClient.isConnected() && vtsRegistered.load())
+            {
                 vtsClient.injectParameter("LinkjiruDetectLowji", value);
+            }
 
             sleep(config.pollIntervalMs);
         }
@@ -143,7 +139,9 @@ public:
         if (vtsClient.isConnected())
         {
             if (vtsRegistered.load())
+            {
                 vtsClient.injectParameter("LinkjiruDetectLowji", 0.0f);
+            }
 
             vtsClient.disconnect();
         }
@@ -155,12 +153,13 @@ public:
 
 private:
     const SharedRingBuffer<ringBufferCapacity>& sharedBuffer;
-    double sampleRate;
+    std::unique_ptr<Analyzer> analyzer;
     Config config;
 
     std::atomic<bool> vtsConnected{false};
     std::atomic<bool> vtsRegistered{false};
     std::atomic<bool> registerRequested{false};
+    std::atomic<bool> registerFailed{false};
     std::atomic<float> detectValue{0.0f};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AnalysisThread)

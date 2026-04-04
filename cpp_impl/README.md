@@ -97,3 +97,44 @@ The plugin injects a `LinkjiruDetectLowji` custom parameter (0.0 or 1.0) into VT
 # Caveats for Development
 
 - The entire audio path (processBlock -> SharedRingBuffer -> AnalysisThread) is lock-free. The one mutex in the codebase is in `VTubeStudioClient` — Boost.Beast's WebSocket stream isn't thread-safe, so the send/disconnect operations need serialization. It only touches network I/O, never the audio pipeline.
+
+# Before You Commit
+
+Run these from `cpp_impl/` before pushing. All three must pass.
+
+### 1. Sanity check (format + lint)
+
+```powershell
+cd sanity
+.\run_lint.ps1
+```
+
+If formatting is off, fix it:
+
+```powershell
+.\run_lint.ps1 -Fix
+```
+
+### 2. Unit tests
+
+```powershell
+cmake --build cmake-build-release --target LinkjiruTests
+cmake-build-release\tests\Release\LinkjiruTests.exe
+```
+
+### 3. Benchmarks (optional, won't block commit)
+
+```powershell
+cmake --build cmake-build-release --target LinkjiruBenchmarks
+cmake-build-release\tests\Release\LinkjiruBenchmarks.exe
+```
+
+Check `bench_results.csv` for regressions. Benchmarks are timing-sensitive and may vary between machines — use your judgement on failures.
+
+### 4. Build the plugin
+
+```powershell
+cmake --build cmake-build-release --target BuildAll --config Release
+```
+
+Verify `artifacts/Linkjiru.vst3` and `artifacts/Linkjiru.dll` are updated.

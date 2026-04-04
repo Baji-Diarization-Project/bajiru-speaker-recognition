@@ -7,6 +7,7 @@
 .venv
 .mypy_cache
 *.zip
+.idea
 cpp_impl/.idea
 cpp_impl/cmake-build-debug
 cpp_impl/cmake-build-release

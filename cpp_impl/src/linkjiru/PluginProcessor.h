@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "SharedRingBuffer.h"
+#include <string>
+#include <vector>
 
 class AnalysisThread;
 
@@ -13,10 +15,10 @@ public:
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
-    bool isBusesLayoutSupported(const BusesLayout &layouts) const override;
-    void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+    void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
-    juce::AudioProcessorEditor *createEditor() override;
+    juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override;
 
     const juce::String getName() const override;
@@ -29,12 +31,12 @@ public:
     int getCurrentProgram() override;
     void setCurrentProgram(int index) override;
     const juce::String getProgramName(int index) override;
-    void changeProgramName(int index, const juce::String &newName) override;
+    void changeProgramName(int index, const juce::String& newName) override;
 
-    void getStateInformation(juce::MemoryBlock &destData) override;
-    void setStateInformation(const void *data, int sizeInBytes) override;
+    void getStateInformation(juce::MemoryBlock& destData) override;
+    void setStateInformation(const void* data, int sizeInBytes) override;
 
-    void startAnalysis();
+    void startAnalysis(const std::string& vtsHost = "localhost", const std::string& vtsPort = "8001");
     void stopAnalysis();
     void restartAnalysis();
     bool isAnalysisRunning() const { return analysisRunning.load(); }
@@ -42,6 +44,7 @@ public:
     // VTS state passthrough — delegates to AnalysisThread atomics
     bool isVtsConnected() const;
     bool isVtsRegistered() const;
+    bool isVtsRegisterFailed() const;
     void requestVtsRegister() const;
     float getDetectValue() const;
 
@@ -54,7 +57,7 @@ private:
     std::unique_ptr<AnalysisThread> analysisThread;
 
     double currentSampleRate = 44100.0;
-    int currentBlockSize = 512;
+    int currentBlockSize     = 512;
     std::vector<float> monoMixBuf;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LinkjiruProcessor)

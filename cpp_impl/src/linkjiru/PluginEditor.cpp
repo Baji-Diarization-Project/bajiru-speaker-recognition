@@ -1,7 +1,6 @@
 #include "PluginEditor.h"
 
-LinkjiruEditor::LinkjiruEditor(LinkjiruProcessor &p)
-    : AudioProcessorEditor(&p), processor(p)
+LinkjiruEditor::LinkjiruEditor(LinkjiruProcessor& p) : AudioProcessorEditor(&p), processor(p)
 {
     startButton.onClick = [this]
     {
@@ -9,23 +8,11 @@ LinkjiruEditor::LinkjiruEditor(LinkjiruProcessor &p)
         updateStatus();
     };
 
-    stopButton.onClick = [this]
-    {
-        processor.stopAnalysis();
-        updateStatus();
-        updateVtsStatus();
-    };
+    stopButton.onClick = [this] { stopAsync(); };
 
-    restartButton.onClick = [this]
-    {
-        processor.restartAnalysis();
-        updateStatus();
-    };
+    restartButton.onClick = [this] { restartAsync(); };
 
-    vtsRegisterButton.onClick = [this]
-    {
-        processor.requestVtsRegister();
-    };
+    vtsRegisterButton.onClick = [this] { processor.requestVtsRegister(); };
 
     statusLabel.setJustificationType(juce::Justification::centred);
     statusLabel.setFont(juce::FontOptions(14.0f));
@@ -58,18 +45,69 @@ LinkjiruEditor::~LinkjiruEditor()
     stopTimer();
 }
 
+void LinkjiruEditor::stopAsync()
+{
+    if (stoppingInProgress.load())
+    {
+        return;
+    }
+
+    stoppingInProgress.store(true);
+    stopButton.setEnabled(false);
+    restartButton.setEnabled(false);
+    statusLabel.setText("Status: Stopping...", juce::dontSendNotification);
+    statusLabel.setColour(juce::Label::textColourId, juce::Colours::orange);
+
+    juce::Thread::launch(
+        [this]
+        {
+            processor.stopAnalysis();
+            stoppingInProgress.store(false);
+        });
+}
+
+void LinkjiruEditor::restartAsync()
+{
+    if (stoppingInProgress.load())
+    {
+        return;
+    }
+
+    stoppingInProgress.store(true);
+    stopButton.setEnabled(false);
+    restartButton.setEnabled(false);
+    statusLabel.setText("Status: Restarting...", juce::dontSendNotification);
+    statusLabel.setColour(juce::Label::textColourId, juce::Colours::orange);
+
+    juce::Thread::launch(
+        [this]
+        {
+            processor.restartAnalysis();
+            stoppingInProgress.store(false);
+        });
+}
+
 void LinkjiruEditor::timerCallback()
 {
     updateVtsStatus();
 
+    if (stoppingInProgress.load())
+    {
+        return;
+    }
+
+    if (!processor.isAnalysisRunning() && !stopButton.isEnabled())
+    {
+        stopButton.setEnabled(true);
+        restartButton.setEnabled(true);
+        updateStatus();
+    }
+
     if (processor.isAnalysisRunning())
     {
         const float val = processor.getDetectValue();
-        detectLabel.setText("LinkjiruDetectLowji = " + juce::String(val, 1),
-                           juce::dontSendNotification);
-        detectLabel.setColour(juce::Label::textColourId,
-                              val > 0.5f ? juce::Colours::limegreen
-                                         : juce::Colours::grey);
+        detectLabel.setText("LinkjiruDetectLowji = " + juce::String(val, 1), juce::dontSendNotification);
+        detectLabel.setColour(juce::Label::textColourId, val > 0.5f ? juce::Colours::limegreen : juce::Colours::grey);
     }
     else
     {
@@ -78,15 +116,13 @@ void LinkjiruEditor::timerCallback()
     }
 }
 
-void LinkjiruEditor::paint(juce::Graphics &g)
+void LinkjiruEditor::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff1a1a2e));
 
     g.setColour(juce::Colours::white);
     g.setFont(juce::Font(juce::FontOptions(22.0f).withStyle("Bold")));
-    g.drawText("Linkjiru",
-               getLocalBounds().removeFromTop(50),
-               juce::Justification::centred);
+    g.drawText("Linkjiru", getLocalBounds().removeFromTop(50), juce::Justification::centred);
 }
 
 void LinkjiruEditor::resized()
@@ -125,9 +161,10 @@ void LinkjiruEditor::updateStatus()
 
 void LinkjiruEditor::updateVtsStatus()
 {
-    const bool running    = processor.isAnalysisRunning();
-    const bool connected  = processor.isVtsConnected();
-    const bool registered = processor.isVtsRegistered();
+    const bool running        = processor.isAnalysisRunning();
+    const bool connected      = processor.isVtsConnected();
+    const bool registered     = processor.isVtsRegistered();
+    const bool registerFailed = processor.isVtsRegisterFailed();
 
     if (!running)
     {
@@ -142,6 +179,13 @@ void LinkjiruEditor::updateVtsStatus()
         vtsRegisterButton.setButtonText("Registered");
         vtsStatusLabel.setText("VTS: parameter active", juce::dontSendNotification);
         vtsStatusLabel.setColour(juce::Label::textColourId, juce::Colours::limegreen);
+    }
+    else if (registerFailed && connected)
+    {
+        vtsRegisterButton.setEnabled(true);
+        vtsRegisterButton.setButtonText("Retry Register");
+        vtsStatusLabel.setText("VTS: registration failed, try again", juce::dontSendNotification);
+        vtsStatusLabel.setColour(juce::Label::textColourId, juce::Colours::red);
     }
     else if (connected)
     {
