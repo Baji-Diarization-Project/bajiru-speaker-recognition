@@ -11,7 +11,6 @@ resolution-markers = [
 members = [
     "baji-recognition",
     "data-augment",
-    "data-augment-example",
     "pitch-math",
 ]
 
@@ -393,21 +392,6 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.14" },
 ]
 provides-extras = ["librosa"]
-
-[[package]]
-name = "data-augment-example"
-version = "0.1.0"
-source = { editable = "python/data_augment_example" }
-dependencies = [
-    { name = "data-augment" },
-    { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "data-augment", editable = "python/data_augment" },
-    { name = "numpy", specifier = ">=2.0" },
-]
 
 [[package]]
 name = "decorator"

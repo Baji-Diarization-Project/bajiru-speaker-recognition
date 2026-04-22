@@ -1,12 +1,10 @@
-"""Example script for a downstream package to confirm working ``from data_augment import Augmenter``
+"""Minimal "how to use it" example for data_augment.
 
-Run with:
+**Setup:** run ``uv sync`` from the repo root once. That installs data_augment
+(and numpy but thats probably already installed) into the workspace venv so
+``from data_augment import Augmenter`` resolves without any extra path juggling.
 
-    uv run --project python/data_augment_example augment-example
-
-Generates a signal, applies the default augmentation chain, and prints output
-shapes / counts. This is the cheapest way to confirm that ``from data_augment import Augmenter``
-works from a downstream package with its own dependency declaration.
+Run with: uv run python python/data_augment/scripts/example.py
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def _voice_like(f0: float, sr: int, duration_s: float, n_harmonics: int = 10) -> NDArray[np.float64]:
-    """Harmonic stack with 1/k falloff — a synthetic stand-in for voiced speech."""
+    """Random-ass signal for testing"""
     t = np.arange(int(duration_s * sr)) / sr
     x = sum(np.sin(2 * np.pi * k * f0 * t) / k for k in range(1, n_harmonics + 1))
     return np.asarray(0.3 * x / np.max(np.abs(x)), dtype=np.float64)
@@ -49,7 +47,7 @@ def main() -> None:
     batch_out = aug.augment(batch, [("gain", {"db": [-3.0, 3.0]})])
     print(f"Batched input (3 signals) x 2 gain modes: {len(batch_out)} variants (expected 6)")
 
-    print("\nOK — data_augment imported and augmented cleanly from a separate package.")
+    print("\nOK — data_augment imported and augmented cleanly.")
 
 
 if __name__ == "__main__":
