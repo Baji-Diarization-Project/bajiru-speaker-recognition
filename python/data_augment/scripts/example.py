@@ -1,6 +1,10 @@
 """Minimal "how to use it" example for data_augment.
 
-**Setup:** run ``uv sync`` from the repo root once. That installs data_augment
+**Setup:**
+``uv run`` should already run ``uv sync`` from root and install data_augment into the workspace env
+
+**optionally:**
+run ``uv sync`` from the repo root once. That installs data_augment
 (and numpy but thats probably already installed) into the workspace venv so
 ``from data_augment import Augmenter`` resolves without any extra path juggling.
 

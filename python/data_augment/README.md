@@ -19,7 +19,7 @@ from data_augment import Augmenter
 
 aug = Augmenter(sample_rate=16000)       # seed=<int> if you want reproducible noise
 
-# Default chain: 5 × (2×2) × 2 = 40 variants per input (pitch, noise, phase_flip).
+# The default chain gives 5 x 2 x 2 = 20 possible augmentations per input (pitch, noise, phase_flip).
 variants = aug.augment(x)
 
 # Dataset in, bigger dataset out.
