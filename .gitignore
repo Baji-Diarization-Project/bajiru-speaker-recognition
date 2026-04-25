@@ -19,6 +19,9 @@ __pycache__/
 *.egg
 *.pkl
 
+# Model cache
+python/speechbrain_ecapa/pretrained_models/
+
 # CMake
 cmake-build-*/
 build/
