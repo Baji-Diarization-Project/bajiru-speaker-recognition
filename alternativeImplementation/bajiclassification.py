@@ -29,11 +29,11 @@ LOWJI_PATH = "/content/drive/MyDrive/Voice Samples/Train/Lowji Talking.wav"
 
 SR = 16000
 WINDOW_SEC = 1.0
-N_MFCC = 20
+N_MSPEC = 20
 N_WINDOWS = 2000
 TOP_DB = 30  # increase if too much silence slips through, decrease if too much speech is cut
 
-def sample_windows(audio_path, label, window_sec=WINDOW_SEC, sr=SR, n_mfcc=N_MFCC, n_windows=N_WINDOWS):
+def sample_windows(audio_path, label, window_sec=WINDOW_SEC, sr=SR, n_mspec=N_MSPEC, n_windows=N_WINDOWS):
       print(f"Loading {audio_path}...")
       audio, _ = librosa.load(audio_path, sr=sr, mono=True)
       window_len = int(window_sec * sr)
@@ -47,12 +47,12 @@ def sample_windows(audio_path, label, window_sec=WINDOW_SEC, sr=SR, n_mfcc=N_MFC
       for _ in range(n_windows):
           start = np.random.randint(0, len(speech_audio) - window_len)
           segment = speech_audio[start : start + window_len]
-          mfcc = librosa.feature.mfcc(y=segment, sr=sr, n_mfcc=n_mfcc)
-          X.append(mfcc[..., np.newaxis])
+          mspec = librosa.feature.melspectrogram(y=segment, sr=sr)
+          X.append(mspec[..., np.newaxis])
           y.append(label)
       print(f"  Done. Shape: {np.array(X).shape}")
       return np.array(X), np.array(y)
-#extract MFCC from each chunk and converts it into 2D feature matrix
+#extract mel-spectrogram from each chunk and converts it into 2D feature matrix
 X_baji,  y_baji  = sample_windows(BAJI_PATH,  label=0)
 X_lowji, y_lowji = sample_windows(LOWJI_PATH, label=1)
 
@@ -86,14 +86,15 @@ import librosa.display
 
 plt.figure(figsize=(8, 4))
 # Visualize the first Mel-Spectrogram from the batch
+X_dB = librosa.power_to_db(X[0, :, :, 0], ref=np.max);
 librosa.display.specshow(
-    X[0, :, :, 0], # Select the first MFCC and remove the channel dimension
+    X_dB,
     x_axis="time",
     sr=SR
 )
 plt.colorbar()
-plt.title("MFCC")
-plt.ylabel("MFCC coefficient")
+plt.title("MSPEC")
+plt.ylabel("MSPEC coefficient")
 plt.xlabel("Time")
 plt.tight_layout()
 plt.show()
@@ -124,7 +125,7 @@ print(f"Train: {X_train.shape} | Val: {X_test.shape}")
 input_shape = X_train.shape[1:]
 
 model = Sequential([
-      # Conv2D scans the MFCC "image" for local patterns (voice texture, formants)
+      # Conv2D scans the mspec "image" for local patterns (voice texture, formants)
       # 16 filters = 16 different patterns to detect
       # kernel (3,3) = each filter looks at a 3x3 patch at a time
       Conv2D(16, kernel_size=(3,3), activation='relu', input_shape=input_shape),
@@ -194,9 +195,9 @@ startTime = time.perf_counter()
 print(f"start {startTime:0.4f}")
 for start in range(0, len(test_audio) - window_len, hop_len):
       segment = test_audio[start : start + window_len]
-      mfcc = librosa.feature.mfcc(y=segment, sr=SR, n_mfcc=N_MFCC)
-      mfcc = mfcc[np.newaxis, ..., np.newaxis]  # add batch and channel dims
-      prob = model.predict(mfcc, verbose=0)[0][0]
+      mspec = librosa.feature.melspectrogram(y=segment, sr=SR)
+      mspec = mspec[np.newaxis, ..., np.newaxis]  # add batch and channel dims
+      prob = model.predict(mspec, verbose=0)[0][0]
       predictions.append(prob)
       timestamps.append(start / SR)
 endTime = time.perf_counter()
@@ -291,6 +292,7 @@ with open(LABELS_TEST_PATH, 'r') as f:
             cnn_predicted_label = labels[i]
 
             # Consider predictions whose start timestamp falls within the ground truth segment
+            # if a prediction falls outside of a truth segment, truth is silence, so answer is irrelevent
             if start_seg <= cnn_timestamp < end_seg:
                 if is_dont_care:
                     # If it's a 'don't care' code and CNN predicts correctly, count it.
