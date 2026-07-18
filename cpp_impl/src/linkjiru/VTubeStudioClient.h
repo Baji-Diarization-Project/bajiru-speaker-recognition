@@ -1,14 +1,20 @@
 #pragma once
 
 #include "Constants.h"
-#include <string>
-#include <atomic>
 #include <memory>
-#include <mutex>
-/* All public methods must be called from the SAME thread (the AnalysisThread).
-   The internal mutex serializes connect/disconnect within that thread.
-   Calling from multiple threads is NOT safe — Boost.Beast's io_context is not
-   thread-safe, and the mutex only protects the high-level call boundary. */
+#include <string>
+
+// Asynchronous VTube Studio WebSocket client. Every network op is async and
+// serviced by pump(), which never blocks: the analysis loop calls pump() once
+// per tick and reads the status getters, never waiting on the socket.
+//
+// Connection policy: connect() begins an async connect + authenticate. While
+// establishing the initial link it retries with its own backoff (VTS may not be
+// up yet). Once Ready, if the link drops it stays Disconnected until connect()
+// is called again. A deliberate, user-triggered reconnect.
+//
+// Single-threaded: every method must be called from the same thread (the
+// AnalysisThread). No internal locking; one owner drives the state machine.
 class VTubeStudioClient
 {
 public:
@@ -18,37 +24,30 @@ public:
     VTubeStudioClient(const VTubeStudioClient&)            = delete;
     VTubeStudioClient& operator=(const VTubeStudioClient&) = delete;
 
-    bool connect(const std::string& host = linkjiru::defaultVtsHost,
-                 const std::string& port = linkjiru::defaultVtsPort);
+    // Service the io_context and advance the state machine. Non-blocking; call
+    // once per analysis-loop tick.
+    void pump() const;
 
-    void disconnect();
-    bool isConnected() const { return connected.load(); }
+    // Begin (or restart) an async connect + authenticate. Idempotent while
+    // already connecting/connected.
+    void connect(const std::string& host = linkjiru::defaultVtsHost,
+                 const std::string& port = linkjiru::defaultVtsPort) const;
 
-    // Full VTS auth flow: try stored token, fall back to popup approval
-    bool authenticate();
+    // Async close + teardown. Safe to call any time.
+    void disconnect() const;
 
-    bool registerParameter(const std::string& paramId, const std::string& explanation, float minValue = 0.0f,
-                           float maxValue = 1.0f, float defaultValue = 0.0f);
+    [[nodiscard]] bool isConnected() const;      // Ready: socket up + authenticated
+    [[nodiscard]] bool isRegistered() const;     // detect parameter created in VTS
+    [[nodiscard]] bool isRegisterFailed() const; // last register attempt failed
 
-    bool injectParameter(const std::string& paramId, float value);
+    // Ask VTS to create the detect parameter; pump() performs it once Ready.
+    void requestRegister() const;
+
+    // Latest-value cell for the detect parameter. pump() sends the most recent
+    // value fire-and-forget; intermediate values coalesce.
+    void setDetectValue(float value) const;
 
 private:
-    struct WebSocketState;
-    std::unique_ptr<WebSocketState> wsState;
-    std::mutex sendMutex;
-    std::atomic<bool> connected{false};
-
-    /* Timeout for all normal WS ops — connect, handshake,
-       close, API round-trips (ms).  If localhost takes
-       longer than 3 s, VTS isn't running.
-       I changed all the ops to this, so its standardized*/
-    static constexpr int OP_TIMEOUT_MS = 3000;
-
-    /* Timeout for the auth popup (ms).  The user has to
-       click "Allow" in VTS, so this needs to be long. */
-    static constexpr int AUTH_POPUP_TIMEOUT_MS = 60000;
-
-    static std::string getTokenFilePath();
-    static bool loadToken(std::string& token);
-    static bool saveToken(const std::string& token);
+    struct Impl;
+    std::unique_ptr<Impl> impl;
 };

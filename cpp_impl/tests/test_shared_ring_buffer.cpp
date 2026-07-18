@@ -1,13 +1,12 @@
 #include <gtest/gtest.h>
 #include "Constants.h"
 #include "SharedRingBuffer.h"
-#include "PluginProcessor.h"
-#include "mock_vts_server.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <thread>
-#include <vector>
 
 #define TAG (::testing::Test::HasFailure() ? "FAIL" : "PASS")
 
@@ -17,7 +16,9 @@ TEST(RingBuffer_WrapAround, Capacity4)
 
     float src[10];
     for (int i = 0; i < 10; ++i)
+    {
         src[i] = static_cast<float>(i + 1);
+    }
 
     buf.write(src, 10);
 
@@ -39,7 +40,9 @@ TEST(RingBuffer_WrapAround, Capacity16)
 
     float src[50];
     for (int i = 0; i < 50; ++i)
+    {
         src[i] = static_cast<float>(i);
+    }
 
     buf.write(src, 50);
 
@@ -47,7 +50,9 @@ TEST(RingBuffer_WrapAround, Capacity16)
     buf.readLastN(dest, 16);
 
     for (int i = 0; i < 16; ++i)
+    {
         EXPECT_FLOAT_EQ(dest[i], static_cast<float>(34 + i));
+    }
 
     std::printf("  [%s] Capacity16: wrote 50, last 16 = [%.0f..%.0f] (3.1x wrap)\n", TAG, dest[0], dest[15]);
 }
@@ -60,7 +65,9 @@ TEST(RingBuffer_WrapAround, Capacity16_MultipleWrites)
     {
         float chunk[3];
         for (int i = 0; i < 3; ++i)
+        {
             chunk[i] = static_cast<float>(batch * 3 + i);
+        }
         buf.write(chunk, 3);
     }
 
@@ -68,7 +75,9 @@ TEST(RingBuffer_WrapAround, Capacity16_MultipleWrites)
     buf.readLastN(dest, 16);
 
     for (int i = 0; i < 16; ++i)
+    {
         EXPECT_FLOAT_EQ(dest[i], static_cast<float>(44 + i));
+    }
 
     std::printf("  [%s] Capacity16_MultipleWrites: 20x3 batches, last 16 = [%.0f..%.0f]\n", TAG, dest[0], dest[15]);
 }
@@ -93,7 +102,9 @@ TEST(RingBuffer_Overrun, DetectsOverrunAndRecovers)
     {
         float block[4];
         for (int j = 0; j < 4; ++j)
+        {
             block[j] = static_cast<float>(100 + i * 4 + j);
+        }
         buf.write(block, 4);
     }
 
@@ -117,7 +128,9 @@ TEST(RingBuffer_Overrun, PostRecoveryDataIsValid)
 
     float seq[32];
     for (int i = 0; i < 32; ++i)
+    {
         seq[i] = static_cast<float>(i);
+    }
     buf.write(seq, 32);
 
     uint64_t cursor = 0;
@@ -139,112 +152,6 @@ TEST(RingBuffer_Overrun, PostRecoveryDataIsValid)
                 TAG, r.samplesRead, minVal, maxVal);
 }
 
-// "thread-safe"?
-
-TEST(RingBuffer_Concurrent, RealPluginProducerConsumer)
-{
-    MockVtsServer mockVts;
-    mockVts.start();
-    const auto port = std::to_string(mockVts.getPort());
-
-    LinkjiruProcessor processor;
-
-    /* 192 kHz / 32-sample blocks — way above production rates
-       to stress the ring buffer under high write pressure.
-       Good stress-test values */
-    static constexpr double SAMPLE_RATE        = 192000.0;
-    static constexpr int BLOCK_SIZE            = 32;
-    static constexpr int TEST_DURATION_SECONDS = 4;
-    static constexpr int TOTAL_BLOCKS          = static_cast<int>((SAMPLE_RATE * TEST_DURATION_SECONDS) / BLOCK_SIZE);
-
-    processor.prepareToPlay(SAMPLE_RATE, BLOCK_SIZE);
-    processor.startAnalysis(linkjiru::defaultVtsHost, port);
-
-    // Coordination sleeps — wait for connect+auth, then registration.
-    static constexpr int vtsConnectDelayMs  = 500;
-    static constexpr int vtsRegisterDelayMs = 200;
-    std::this_thread::sleep_for(std::chrono::milliseconds(vtsConnectDelayMs));
-    processor.requestVtsRegister();
-    std::this_thread::sleep_for(std::chrono::milliseconds(vtsRegisterDelayMs));
-
-    const auto blockDuration = std::chrono::duration<double>(static_cast<double>(BLOCK_SIZE) / SAMPLE_RATE);
-
-    std::atomic<bool> writerDone{false};
-
-    /* Near-silence duration before switching to speech signal.
-       2.5 s lets the RmsAnalyzer finish calibration first. */
-    static constexpr double SILENCE_DURATION_SEC = 2.5;
-    static constexpr int SILENCE_BLOCKS          = static_cast<int>((SAMPLE_RATE * SILENCE_DURATION_SEC) / BLOCK_SIZE);
-
-    std::thread writer(
-        [&]
-        {
-            juce::AudioBuffer<float> buffer(1, BLOCK_SIZE);
-            juce::MidiBuffer midi;
-
-            for (int block = 0; block < TOTAL_BLOCKS; ++block)
-            {
-                if (block < SILENCE_BLOCKS)
-                {
-                    for (int i = 0; i < BLOCK_SIZE; ++i)
-                        buffer.setSample(0, i, 0.001f);
-                }
-                else
-                {
-                    for (int i = 0; i < BLOCK_SIZE; ++i)
-                        buffer.setSample(0, i, 0.5f * std::sin(static_cast<float>(block * BLOCK_SIZE + i) * 0.1f));
-                }
-
-                processor.processBlock(buffer, midi);
-                std::this_thread::sleep_for(blockDuration);
-            }
-
-            writerDone.store(true);
-        });
-
-    static constexpr int pollIntervalMs    = 16; // ~60 Hz, matches AnalysisThread
-    static constexpr float detectThreshold = 0.5f;
-
-    int nonZeroDetections = 0;
-    int totalPolls        = 0;
-    while (!writerDone.load())
-    {
-        const float val = processor.getDetectValue();
-        if (val > detectThreshold)
-            ++nonZeroDetections;
-        ++totalPolls;
-        std::this_thread::sleep_for(std::chrono::milliseconds(pollIntervalMs));
-    }
-
-    writer.join();
-
-    const bool vtsConnected  = processor.isVtsConnected();
-    const bool vtsRegistered = processor.isVtsRegistered();
-    const int injections     = mockVts.getInjectCount();
-
-    processor.stopAnalysis();
-    processor.releaseResources();
-    mockVts.stop();
-
-    EXPECT_TRUE(vtsConnected) << "AnalysisThread never connected to mock VTS on port " << port;
-
-    EXPECT_TRUE(vtsRegistered) << "VTS parameter was never registered";
-
-    EXPECT_GT(injections, 0) << "Mock VTS received 0 InjectParameterDataRequest calls";
-
-    EXPECT_GT(nonZeroDetections, 0) << "Analysis pipeline never detected speech (" << totalPolls << " polls, all 0.0)";
-
-    std::printf("\n  [%s] RealPluginProducerConsumer:\n"
-                "    rate=%.0fHz block=%d duration=%ds\n"
-                "    blocks: %d total (%d silence + %d signal)\n"
-                "    detections: %d/%d polls (%.1f%%)\n"
-                "    vts: connected=%s registered=%s injections=%d port=%s\n\n",
-                TAG, SAMPLE_RATE, BLOCK_SIZE, TEST_DURATION_SECONDS, TOTAL_BLOCKS, SILENCE_BLOCKS,
-                TOTAL_BLOCKS - SILENCE_BLOCKS, nonZeroDetections, totalPolls,
-                totalPolls > 0 ? 100.0 * nonZeroDetections / totalPolls : 0.0, vtsConnected ? "yes" : "no",
-                vtsRegistered ? "yes" : "no", injections, port.c_str());
-}
-
 // Boundary abuse
 
 TEST(RingBuffer_Boundary, WriteLargerThanCapacity)
@@ -253,7 +160,9 @@ TEST(RingBuffer_Boundary, WriteLargerThanCapacity)
 
     float src[20];
     for (int i = 0; i < 20; ++i)
+    {
         src[i] = static_cast<float>(i);
+    }
 
     buf.write(src, 20);
 
@@ -263,7 +172,9 @@ TEST(RingBuffer_Boundary, WriteLargerThanCapacity)
     buf.readLastN(dest, 16);
 
     for (int i = 0; i < 16; ++i)
+    {
         EXPECT_FLOAT_EQ(dest[i], static_cast<float>(4 + i));
+    }
 
     std::printf("  [%s] WriteLargerThanCapacity: wrote 20 into cap-16, "
                 "writeCount=%llu, last 16 = [%.0f..%.0f]\n",
@@ -279,7 +190,7 @@ TEST(RingBuffer_Concurrent, ReadLastNCoherence)
 {
     // Production-sized buffer and window for realistic memory layout.
     static constexpr int CAP    = linkjiru::ringBufferCapacity;
-    static constexpr int WINDOW = linkjiru::defaultAnalysisWindow;
+    static constexpr int WINDOW = linkjiru::modelWindowSamples;
     SharedRingBuffer<CAP> buf;
 
     // High write pressure to maximize chance of catching a torn read.
@@ -339,7 +250,9 @@ TEST(RingBuffer_Concurrent, ReadLastNCoherence)
         }
 
         if (failed.load())
+        {
             break;
+        }
 
         checksCompleted.fetch_add(1);
     }

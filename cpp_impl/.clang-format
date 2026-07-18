@@ -11,6 +11,9 @@ BreakBeforeBraces: Allman
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
+# Match the readability-braces-around-statements clang-tidy check: always brace
+# single-statement control bodies, so format and tidy stay in agreement.
+InsertBraces: true
 
 PointerAlignment: Left
 ReferenceAlignment: Left
