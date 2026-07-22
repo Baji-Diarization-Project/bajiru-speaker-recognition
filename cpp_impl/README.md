@@ -1,140 +1,125 @@
 # Architecture
 
+A VST3/Standalone plugin captures audio, an in-process analysis thread runs an ONNX
+speaker model on it, and the result drives a VTube Studio parameter.
+
 ## System Design
+
 ```mermaid
 flowchart TD
-    DAW["DAW Host"] --> PB
+    DAW["DAW Host"]
+    CTRL["UI button / host automation"]
 
-    subgraph Part1["Part 1: VST3 Plugin (Linkjiru)"]
-        PB["processBlock()"]
-        PB -->|"wait-free atomic write"| RB["SharedRingBuffer (131072 samples, ~3s)"]
-        UI["Plugin UI Start / Stop / Restart"]
+    subgraph AUD["AUDIO THREAD — DAW callback (real-time)"]
+        PB["processBlock(): downmix to mono"]
     end
 
-    subgraph Part2["Part 2: Analysis (in-process, no file I/O)"]
-        AT["AnalysisThread (~60fps)"] -->|"readLastN snapshot"| RMS["RmsAnalyzer"]
-        RMS -->|"calibrated threshold"| SPEECH["Speech Detection"]
+    HR["hostRing — SharedRingBuffer 131072 (512 KB)<br/>processor-owned: audio writes, analysis drains"]
+
+    subgraph ANA["ANALYSIS THREAD — Manager loop, ~60 fps (non-RT)"]
+        RS["drain hostRing + Resampler -> 48 kHz"]
+        MR["modelRing — SharedRingBuffer 131072<br/>thread-owned: sole writer + reader"]
+        GATE["silence gate (adaptive RMS) + cadence gate (800-samp hop)"]
+        HARV["harvest -> low-pass + hysteresis + speaker latch"]
+        VP["pump VTS + inject detect"]
+        PUB["publish status + scores + detect (atomics)"]
     end
 
-    subgraph Part3["Part 3: VTube Studio"]
-        WS["VTubeStudioClient (Boost.Beast + nlohmann/json)
-        ws://localhost:8001
-        Auth: one-time token handshake
-        InjectParameterDataRequest @ 60fps"]
+    subgraph ORTT["ORT WORKER THREAD"]
+        INF["DirectML inference: 24000 floats -> 5 scores"]
+    end
+
+    subgraph MSG["MESSAGE / UI THREAD"]
+        RECON["'Analysis Active' param -> AsyncUpdater -> start/stop"]
+        ED["Editor: 15 Hz poll -> paint state"]
+    end
+
+    subgraph VTSG["VTube Studio (localhost WebSocket)"]
+        WS["VTubeStudioClient (Boost.Beast + nlohmann/json)"]
         VTS["VTube Studio"]
-        WS --> VTS
     end
 
-    RB --> AT
-    UI --> AT
-    SPEECH --> WS
+    DAW -->|"stereo, host rate 44.1/48 kHz, 32-512 samp/block"| AUD
+    PB -.->|"wait-free write, N samp/block"| HR
+    HR -.->|"drain (cursor read, up to 4096/chunk)"| ANA
+    RS -->|"resampled 48 kHz write"| MR
+    MR -->|"readLastN 24000 (0.5 s), every 800-samp hop (60 Hz)"| GATE
+    GATE -.->|"kick RunAsync (non-blocking); drop window if GPU busy"| ORTT
+    INF -.->|"onComplete: 5 scores via atomics"| HARV
+    HARV --> VP
+    HARV --> PUB
+    VP -->|"inject 0/1 (on change / 500 ms keepalive)"| VTSG
+    WS -->|"InjectParameterDataRequest: LinkjiruDetectLowji"| VTS
+
+    CTRL --> MSG
+    RECON -.->|"startThread / stopThread"| ANA
+    PUB -.->|"getStatus() atomics"| ED
 ```
 
-## Why we don't use AbstractFifo (please don't try)
+Dashed edges cross a thread boundary and are **lock-free**: a ring buffer (wait-free) or a published atomic. Solid edges run within a single thread. The audio thread is the only real-time one; everything else runs off it.
 
-We used to use `juce::AbstractFifo` as the bridge between `processBlock()` and everything else. It seemed like the obvious choice. It was not. My bad. I forgor we needed to manage threads outside of the scope of JUCE, and it causes too much pain to architect that kind of system. Why so thready you say? Because `AbstractFifo` is **single-consumer**... the plot thickens
+`LinkjiruProcessor` (the plugin) owns `hostRing`: the audio thread writes it, so it must outlive a torn-down manager. The `AnalysisThread` owns `modelRing` and the `Resampler`. It is the sole writer and reader of `modelRing`, so nothing else can touch it and each session gets a fresh empty ring. The thread drains `hostRing`, resamples to 48 kHz into `modelRing`, and reads 0.5 s windows for the model.
 
-So when we needed an `AnalysisThread` to also read the audio, the only option was to route it through the file that `BufferWriterThread` was already writing: `buffer.raw`. Both threads would just read the same file, right? Enter the infamous race condition.
+## VTS injects are fire-and-forget
 
-`replaceWithData()` is not atomic. `loadFileAsData()` is not atomic. There is no lock, no double buffer, no atomic rename. The writer can be halfway through writing 32KB of floats while the reader calls `loadFileAsData()` and gets half old data, half new data. And you won't get an error -- you'll get garbage samples that look almost correct, which is worse. I had to find this out the hard way.
+The AnalysisThread tracks the VTS connection and registration from real responses (`ParameterCreationResponse` / `APIError`) that it reads and surfaces to the UI. The per-frame detect inject is deliberately fire-and-forget: `InjectParameterDataResponse` is drained and ignored, and only a socket-level write error drops the connection. Acking each inject would buy nothing: a dropped one is self-correcting (the next frame overwrites the value, and a 500 ms keepalive re-sends the current one), so tracking it would only add latency and state.
 
-Even if you "fix" the torn reads with file locking or atomic rename. Both threads are in the same process. The data is right there in memory. This however needs to be managed depending on the size of the final inference input vector.
+## Don't reintroduce AbstractFifo
 
-`SharedRingBuffer` fixes all of this. `processBlock()` writes with a single atomic counter bump. Any number of readers can independently snapshot or sequentially read without consuming anything. No file needed for the analysis path.
+`juce::AbstractFifo` is single-consumer, so it can't feed both the writer and the `AnalysisThread`. The old workaround (both threads sharing a `buffer.raw` file) tore reads apart (`loadFileAsData()` isn't atomic; you get half-old/half-new samples with no error). `SharedRingBuffer` fixes it: `processBlock()` writes with one atomic counter bump, and any number of readers snapshot or cursor-read without consuming. Need another reader? Give it a cursor and don't bring back AbstractFifo.
 
-**Do not reintroduce AbstractFifo.** If you need another reader, just give it a cursor into the SharedRingBuffer. That's the whole point.
-
-# Building the VST & VST3
+# Building
 
 ## Prerequisites
 
-- CMake 3.22+
-- C++ compiler (MSVC only please)
-- Git submodules for JUCE and VST2.4 SDK: `git submodule update --init --recursive`
+- CMake 3.22+, MSVC (Windows only)
+- JUCE submodule: `git submodule update --init --recursive`
+- A DirectML-capable (DX12) GPU to run detection
+- The model file (see below)
 
-Boost and nlohmann/json are fetched automatically by CMake (FetchContent). No manual install needed. First configure will be slower while they download; subsequent runs are cached.
+Boost, nlohmann/json, and ONNX Runtime (DirectML) are fetched by CMake; no manual install. The first configure is slower, then cached.
 
-## Configure
-### From the repo root
+## Model file (required for the plugin)
+
+`onnx-model/runtime_model.onnx` is **not in the repo** (too large, gitignored). A fresh clone therefore **cannot build the plugin**: the post-build step copies the model next to each binary and fails if it's missing. **Request it separately** and place it at `cpp_impl/onnx-model/runtime_model.onnx`. The unit tests don't need it.
+
+## Build
+
 ```bash
 cd cpp_impl
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-```
-
-With Ninja (faster builds):
-
-```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --target BuildAll   # plugin (VST3 + Standalone) + unit tests
 ```
+
+Unit tests only, no model, GPU, JUCE, or ONNX Runtime (this is what CI runs):
 
 ```bash
-cmake --build build --config Release --target BuildAll
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLINKJIRU_UNIT_TESTS_ONLY=ON
+cmake --build build --target LinkjiruUnitTests
 ```
 
-## Artifacts
+The VST3 bundle lands in `artifacts/Linkjiru.vst3/`; the Standalone app under the build tree. VST3 + Standalone only, no VST2.
 
-After building, outputs are copied to `cpp_impl/artifacts/`:
+# VTube Studio
 
-- `artifacts/Linkjiru.vst3/` — VST3 bundle
-- `artifacts/Linkjiru.dll` — VST2 plugin
+The plugin drives a `LinkjiruDetectLowji` (0/1) parameter in VTS over WebSocket.
 
-# VTube Studio Integration
+1. **Start Analysis**: captures audio, detects speech, and connects + authenticates to VTS in the background (retries every 5 s).
+2. **Register in VTS**: once connected (status yellow), click to create the parameter in VTS.
+3. After registration, the plugin pushes the detect value to VTS; map `LinkjiruDetectLowji` in VTS's parameter settings.
 
-The plugin injects a `LinkjiruDetectLowji` custom parameter (0.0 or 1.0) into VTube Studio at ~60fps via WebSocket. Parameter registration is a deliberate user action, not automatic.
+- **First-run auth:** approve the "Linkjiru" popup in VTS; the token is DPAPI-encrypted at `%APPDATA%\Linkjiru\vts_token.dat` (once only).
+- **Reconnect:** if VTS restarts, the plugin reconnects in ~5 s. Re-register, since VTS forgets custom params on restart.
+- **No VTS:** everything still runs; nothing breaks.
 
-## How it works
+# Development notes
 
-1. **Start Analysis** — the plugin begins capturing audio and detecting speech. The analysis thread also silently connects to VTS and authenticates in the background (retries every 5s if VTS isn't running yet).
-2. **Register in VTS** — once VTS is connected (status label turns yellow), the "Register in VTS" button enables. Click it to create the `LinkjiruDetectLowji` parameter in VTS. The button greys out and shows "Registered" once done.
-3. **Parameter injection begins** — after registration, the plugin sends 0.0/1.0 to VTS every frame (~60fps). You can map `LinkjiruDetectLowji` to model behavior in VTS's parameter settings.
-
-## Notes
-
-- **First run auth:** VTS will show an approval popup for the "Linkjiru" plugin. Click allow. The token is encrypted (DPAPI) and saved to `%APPDATA%\Linkjiru\vts_token.dat` so you only do this once.
-- **Reconnect:** If VTS is restarted while the plugin is running, it reconnects within ~5 seconds. You'll need to click "Register in VTS" again since VTS forgets custom parameters on restart.
-- **No VTS running?** The plugin works fine without it. Analysis still runs, the register button stays greyed out, and nothing breaks.
-
-# Caveats for Development
-
-- The entire audio path (processBlock -> SharedRingBuffer -> AnalysisThread) is lock-free. The one mutex in the codebase is in `VTubeStudioClient` — Boost.Beast's WebSocket stream isn't thread-safe, so the send/disconnect operations need serialization. It only touches network I/O, never the audio pipeline.
+The whole pipeline is lock-free: wait-free rings, atomics for cross-thread status, no mutexes anywhere. `VTubeStudioClient` needs none because only the AnalysisThread's `pump()` ever drives it, so Boost.Beast's non-thread-safe WebSocket stream is never touched concurrently.
 
 # Before You Commit
 
-Run these from `cpp_impl/` before pushing. All three must pass.
+From `cpp_impl/`:
 
-### 1. Sanity check (format + lint)
-
-```powershell
-cd sanity
-.\run_lint.ps1
-```
-
-If formatting is off, fix it:
-
-```powershell
-.\run_lint.ps1 -Fix
-```
-
-### 2. Unit tests
-
-```powershell
-cmake --build cmake-build-release --target LinkjiruTests
-cmake-build-release\tests\Release\LinkjiruTests.exe
-```
-
-### 3. Benchmarks (optional, won't block commit)
-
-```powershell
-cmake --build cmake-build-release --target LinkjiruBenchmarks
-cmake-build-release\tests\Release\LinkjiruBenchmarks.exe
-```
-
-Check `bench_results.csv` for regressions. Benchmarks are timing-sensitive and may vary between machines — use your judgement on failures.
-
-### 4. Build the plugin
-
-```powershell
-cmake --build cmake-build-release --target BuildAll --config Release
-```
-
-Verify `artifacts/Linkjiru.vst3` and `artifacts/Linkjiru.dll` are updated.
+1. **Lint:** `cd sanity && .\run_lint.ps1` (`-Fix` to auto-format).
+2. **Unit tests:** `cmake --build cmake-build-release --target LinkjiruUnitTests`, then run `cmake-build-release\tests\Release\LinkjiruUnitTests.exe`. Pure C++, no GPU/model; the whole suite, and what CI runs.
+3. **Plugin build:** `cmake --build cmake-build-release --target BuildAll --config Release` (needs the model file). Verify `artifacts/Linkjiru.vst3`.

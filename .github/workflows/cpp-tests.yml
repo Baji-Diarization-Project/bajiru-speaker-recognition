@@ -7,55 +7,36 @@ on:
       - 'cpp_impl/src/**'
       - 'cpp_impl/tests/**'
       - 'cpp_impl/CMakeLists.txt'
+      - '.github/workflows/cpp-tests.yml'
   pull_request:
     paths:
       - 'cpp_impl/src/**'
       - 'cpp_impl/tests/**'
       - 'cpp_impl/CMakeLists.txt'
+      - '.github/workflows/cpp-tests.yml'
 
 jobs:
-  test:
+  unit-tests:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure CMake
+      # Pure-C++ correctness gate: LINKJIRU_UNIT_TESTS_ONLY skips JUCE, ONNX
+      # Runtime, Boost, and the plugin, so no GPU, model, or submodules are
+      # needed. Only googletest is fetched.
+      - name: Configure CMake (unit tests only)
         working-directory: cpp_impl
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLINKJIRU_UNIT_TESTS_ONLY=ON
 
       - name: Build unit tests
         working-directory: cpp_impl
-        run: cmake --build build --target LinkjiruTests
+        run: cmake --build build --target LinkjiruUnitTests
 
-      - name: Run unit tests (no networking)
+      - name: Run unit tests
         working-directory: cpp_impl/build/tests
-        run: ./LinkjiruTests.exe --gtest_filter=-*RealPlugin*
-
-      - name: Run integration tests (localhost)
-        working-directory: cpp_impl/build/tests
-        continue-on-error: true
-        run: ./LinkjiruTests.exe --gtest_filter=*RealPlugin*
-
-      - name: Build benchmarks
-        working-directory: cpp_impl
-        run: cmake --build build --target LinkjiruBenchmarks
-
-      - name: Run benchmarks
-        working-directory: cpp_impl/build/tests
-        continue-on-error: true
-        run: ./LinkjiruBenchmarks.exe
-
-      - name: Upload benchmark results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-results
-          path: cpp_impl/build/tests/bench_results.csv
-          if-no-files-found: ignore
+        run: ./LinkjiruUnitTests.exe

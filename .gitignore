@@ -31,3 +31,12 @@ cpp_impl/.idea
 cpp_impl/cmake-build-debug
 cpp_impl/cmake-build-release
 cpp_impl/artifacts/*
+cpp_impl/installer/staging/
+cpp_impl/installer/Output/
+# Benchmark output (regenerated at runtime)
+bench_results.csv
+
+# Local-only model (too large to track) + generation scripts
+cpp_impl/onnx-model/
+cpp_impl/scripts/
+/scripts/
