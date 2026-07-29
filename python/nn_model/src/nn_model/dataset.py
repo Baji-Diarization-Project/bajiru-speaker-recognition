@@ -5,6 +5,7 @@ import os
 import random
 
 import numpy as np
+import numpy.lib.format as npf
 import torch
 from torch.utils.data import Dataset
 
@@ -14,9 +15,7 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
 
     def __init__(
         self,
-        file_pairs: list[
-            tuple[tuple[str, np.dtype | type, float], tuple[str, np.dtype | type]]
-        ],
+        file_pairs: list[tuple[str, str]],
         hop_length: int = 256,
         win_length: int = 512,
         seg_length: int = 2048,
@@ -25,9 +24,9 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         """Create AudioScoreDataset
 
         Args:
-            file_pairs (list[tuple[tuple[str, np.dtype  |  type, float], tuple[str, np.dtype  |  type]]]): List of (audio, score) file pairs:
-              audio (path, type, multiplier) - `path` to the file with raw audio data; `type` of the data in a file; `multiplier` to adjust the audio to a range of -1.0:1.0
-              scores (path, type) - `path` to the file with raw scores data; `type` of the data in a file; The scores should have value from 0 to 1 (or their fractions)
+            file_pairs (list[tuple[str, str]]): List of (audio, score) file pairs:
+              audio - path to the npy file with raw audio data
+              scores - path to the npy file with raw scores data; The scores should have value from 0 to 1 (or their fractions)
             hop_length (int, optional): Audio data step interval
             win_length (int, optional): The size of fft window
             seg_length (int, optional): The size of the output audio segment
@@ -47,13 +46,12 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         step_offsets = []
         total_steps = 0
         for audio, scores in file_pairs:
-            size = os.path.getsize(audio[0]) // np.dtype(audio[1]).itemsize
-            if (size * n_classes) != (
-                os.path.getsize(scores[0]) // np.dtype(scores[1]).itemsize
-            ):
-                msg = f"The scores file '{scores[0]}' contains wrong number of elements, it should have audio_samples*{n_classes} elements"
+            audio_shape, audio_type = read_npy_header(audio)
+            scores_shape, _ = read_npy_header(scores)
+            if audio_shape[0] != scores_shape[0] or n_classes != scores_shape[1]:
+                msg = f"The scores file '{scores}' contains wrong number of elements, it should have (number of audio samples of '{audio}')*{n_classes} elements"
                 raise ValueError(msg)
-            n_steps = size - win_length  # the last window
+            n_steps = audio_shape[0] - win_length  # the last window
 
             n_steps = (
                 (n_steps // hop_length)
@@ -61,8 +59,16 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 else (n_steps // hop_length + 1)
             )  # same as `n_steps = int(ceil(n_steps / hop_length))`
 
+            # Multiplier to normalize the audio input
+            mult = 1.0
+            match audio_type.str:
+                case "i2" | "<i2":
+                    mult = 1.0 / 0x7FFF
+                case "i4" | "<i4":
+                    mult = 1.0 / 0x7FFFFFFF
+
             n_steps += 1  # the last window
-            files_info.append((size, n_steps))
+            files_info.append((audio_shape[0], n_steps, mult))
             step_offsets.append(total_steps)
             total_steps += n_steps
 
@@ -83,24 +89,19 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         """
         return self.total_steps
 
-    def _cached_file(self, file: tuple[str, np.dtype | type], shape) -> np.ndarray:
-        path = file[0]
-        dtype = file[1]
+    def _cached_file(self, path: str) -> np.ndarray:
         if path not in self._file_cache:
-            mm = np.memmap(path, dtype=dtype, mode="r", shape=shape)
+            mm = npf.open_memmap(path, mode="r")
             self._file_cache[path] = mm
         return self._file_cache[path]
 
     def _end_element(self, file_idx, step) -> int:
-        (size, n_steps) = self.files_info[file_idx]
+        (size, n_steps, _) = self.files_info[file_idx]
         step_end = step + 1
         return size - (n_steps - step_end) * self.hop_length
 
     def _make_audio(self, end_el: int, file_idx: int) -> np.ndarray:
-        audio_file = self.file_pairs[file_idx][0]
-        audio = self._cached_file(
-            (audio_file[0], audio_file[1]), self.files_info[file_idx][0]
-        )
+        audio = self._cached_file(self.file_pairs[file_idx][0])
 
         audio_seg = np.zeros(self.seg_length, dtype=np.float32)
         if end_el < self.seg_length:
@@ -110,13 +111,11 @@ class AudioScoreDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             start_el = end_el - self.seg_length
             audio_seg[:] = audio[start_el:end_el].astype(np.float32, copy=False)
 
-        audio_seg *= audio_file[2]
+        audio_seg *= self.files_info[file_idx][2]
         return audio_seg
 
     def _make_scores(self, end_el: int, file_idx: int) -> np.ndarray:
-        scores = self._cached_file(
-            self.file_pairs[file_idx][1], (self.files_info[file_idx][0], self.n_classes)
-        )
+        scores = self._cached_file(self.file_pairs[file_idx][1])
         index = end_el - self.win_mid
 
         if index < 0:
@@ -151,3 +150,13 @@ class RandomOffsetDataset(AudioScoreDataset):
     def _end_element(self, file_idx, step) -> int:
         end_el = super()._end_element(file_idx, step)
         return max(0, end_el - random.randint(0, self.hop_length - 1))
+
+
+def read_npy_header(path: str) -> tuple[tuple[int, ...], np.dtype]:
+    with open(os.fspath(path), "rb") as fp:
+        version = npf.read_magic(fp)
+        if version[0] == 1:
+            shape, _, dtype = npf.read_array_header_1_0(fp)
+        else:
+            shape, _, dtype = npf.read_array_header_2_0(fp)
+        return shape, dtype

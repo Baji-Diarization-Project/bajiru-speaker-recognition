@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
+import numpy.lib.format as npf
 import scipy.io.wavfile as wav
 
 PROGRESS_DISPLAY_INTERVAL = 0.5
@@ -26,8 +27,6 @@ def triangular_kernel(front_samples: int, rear_samples: int) -> np.ndarray:
 def labels_to_scores(
     input_path: str,
     output_path: str,
-    n_samples: int,
-    n_scores: int,
     front_samples: int,
     rear_samples: int,
     chunk_size: int,
@@ -44,10 +43,9 @@ def labels_to_scores(
         chunk_size (int): The size of the chunk used for batching
 
     """
-    inp = np.memmap(input_path, dtype=np.uint8, mode="r+", shape=(n_samples, n_scores))
-    out = np.memmap(
-        output_path, dtype=np.float16, mode="w+", shape=(n_samples, n_scores)
-    )
+    inp = npf.open_memmap(input_path, mode="r")
+    (n_samples, n_scores) = inp.shape
+    out = npf.open_memmap(output_path, dtype=np.float16, mode="w+", shape=inp.shape)
 
     kern = triangular_kernel(front_samples, rear_samples)
     klen = len(kern)
@@ -166,7 +164,12 @@ def map_labels(
         label_samples[label] = l_samples
 
     n_scores = 5
-    out = np.memmap(output_path, dtype=np.uint8, mode="w+", shape=(n_samples, n_scores))
+    out = npf.open_memmap(
+        output_path,
+        dtype=np.uint8,
+        mode="w+",
+        shape=(n_samples, n_scores),
+    )
 
     out[:, 0] = label_samples["p"] * label_samples["b"]  # baji voice
     out[:, 1] = label_samples["p"] * label_samples["r"]  # ru voice
@@ -187,10 +190,8 @@ def convert_dataset(labels_path: str, audio_path: str, output_path: str):
 
     if os.path.exists("tmp.labels"):
         os.remove("tmp.labels")
-    n_scores = map_labels(labels_path, sample_rate, samples, "tmp.labels")
-    labels_to_scores(
-        "tmp.labels", output_path, samples, n_scores, 256, 1024 * 2, 1000000
-    )
+    map_labels(labels_path, sample_rate, samples, "tmp.labels")
+    labels_to_scores("tmp.labels", output_path, 256, 1024 * 2, 1000000)
     os.remove("tmp.labels")
 
 
@@ -199,8 +200,11 @@ def convert_audio(input_path: str, output_path: str, target_samples: int | None 
     _sample_rate, audio_data = wav.read(input_path)
     if target_samples is None:
         target_samples = len(audio_data)
-    file = np.memmap(
-        output_path, dtype=audio_data.dtype, mode="w+", shape=(target_samples,)
+    file = npf.open_memmap(
+        output_path,
+        dtype=audio_data.dtype,
+        mode="w+",
+        shape=(target_samples,),
     )
     src_samples = audio_data.shape[0]
     if src_samples > target_samples:
