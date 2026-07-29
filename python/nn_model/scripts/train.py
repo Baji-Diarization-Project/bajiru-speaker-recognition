@@ -96,7 +96,7 @@ def train_step(batch):
     batch_target: torch.Tensor = batch_target.to(device)
 
     optimizer.zero_grad()
-    _, logits = model.forward_train(batch_audio)
+    _, logits = model.forward_train(batch_audio, True)
     loss: torch.Tensor = criterion(logits, batch_target)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -110,7 +110,7 @@ def eval_step(batch):
     with torch.no_grad():
         batch_audio = batch_audio.to(device)
         batch_target = batch_target.to(device)
-        _, logits = model.forward_train(batch_audio)
+        _, logits = model.forward_train(batch_audio, False)
         return criterion(logits, batch_target).detach().item()
 
 

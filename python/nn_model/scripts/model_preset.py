@@ -1,4 +1,6 @@
+from nn_model.augmentation import BinShiftAugment, NoiseAugment, VolumeAugment
 from nn_model.model import AudioClassifier
+from nn_model.preprocessing import MelCompressor
 
 sample_rate = 48000
 segment_samples = 24000
@@ -17,4 +19,20 @@ model = AudioClassifier(
     n_channels=128,
     n_convs=3,
     n_history=1 + (segment_samples - win_length) // hop_length,
+    mel_prep=[
+        MelCompressor(
+            threshold=-54,
+            ratio=8,
+            knee=40,
+            attack_frames=(1 / 1000) * (sample_rate / hop_length),  # 1ms attack
+            release_frames=(40 / 1000) * (sample_rate / hop_length),  # 40ms release
+            makeup=30,
+        )
+    ],
+    mel_augm=[
+        # Optional augmentations
+        BinShiftAugment(2),
+        VolumeAugment(0.5),
+        NoiseAugment(0.005),
+    ],
 )
