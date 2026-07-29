@@ -1,7 +1,6 @@
 import argparse
 
 import model_preset
-import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -31,24 +30,17 @@ model = model.to(device)
 
 def make_source(
     base_path: str,
-) -> tuple[tuple[str, np.dtype | type, float], tuple[str, np.dtype | type]]:
+) -> tuple[str, str]:
     """Create audio and scores source configuration
 
     Args:
         base_path (str): Base path to the audio/scores dataset files
 
     Returns:
-        tuple[tuple[str, np.dtype | type, float], tuple[str, np.dtype | type]]: The source configuration
+        tuple[str, str]: The source configuration
 
     """
-    return (
-        (
-            base_path + ".audio",
-            np.int16,  # audio should be in 16-bit int format
-            1.0 / 0x7FFF,  # normalizing audio by dividing it by int16.MAX
-        ),
-        (base_path + ".scores", np.float16),  # scores should be in 16-bit float format
-    )
+    return (base_path + ".audio", base_path + ".scores")
 
 
 # Prepared training files
@@ -96,7 +88,7 @@ def train_step(batch):
     batch_target: torch.Tensor = batch_target.to(device)
 
     optimizer.zero_grad()
-    _, logits = model.forward_train(batch_audio)
+    _, logits = model.forward_train(batch_audio, True)
     loss: torch.Tensor = criterion(logits, batch_target)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -110,7 +102,7 @@ def eval_step(batch):
     with torch.no_grad():
         batch_audio = batch_audio.to(device)
         batch_target = batch_target.to(device)
-        _, logits = model.forward_train(batch_audio)
+        _, logits = model.forward_train(batch_audio, False)
         return criterion(logits, batch_target).detach().item()
 
 

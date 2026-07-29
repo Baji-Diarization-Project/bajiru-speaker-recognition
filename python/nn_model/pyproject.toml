@@ -25,7 +25,7 @@ ignore = [
     "D213",
     "D400",
     "D415",
-    "FBT002",
+    "FBT",
     "T201",
     "PTH",     # fs stuff
     "S311",    # no need for crypto rng
